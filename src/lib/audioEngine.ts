@@ -29,6 +29,14 @@ export function initAudioEngine() {
     if (audio!.duration && !isSeeking) {
       usePlayerStore.getState().setProgress(audio!.currentTime / audio!.duration);
     }
+    // Keep lock screen progress in sync
+    if ("mediaSession" in navigator && audio!.duration) {
+      navigator.mediaSession.setPositionState({
+        duration: audio!.duration,
+        playbackRate: 1,
+        position: audio!.currentTime,
+      });
+    }
   };
 
   audio.onloadedmetadata = () => {
@@ -39,6 +47,18 @@ export function initAudioEngine() {
     if (pendingPlay) {
       pendingPlay = false;
       audio!.play().catch(() => {});
+    }
+  };
+
+  audio.onplay = () => {
+    if ("mediaSession" in navigator) {
+      navigator.mediaSession.playbackState = "playing";
+    }
+  };
+
+  audio.onpause = () => {
+    if ("mediaSession" in navigator) {
+      navigator.mediaSession.playbackState = "paused";
     }
   };
 
@@ -96,6 +116,12 @@ export function initAudioEngine() {
     (isPlaying) => {
       const { currentTrack } = usePlayerStore.getState();
       if (!audio || currentTrack?.source === "youtube") return;
+
+      // Update lock screen state immediately
+      if ("mediaSession" in navigator) {
+        navigator.mediaSession.playbackState = isPlaying ? "playing" : "paused";
+      }
+
       if (isPlaying) {
         if (audio.src && audio.readyState >= 3) {
           audio.play().catch(() => {});
@@ -137,24 +163,44 @@ function updateMediaSession(track: {
   title: string; artist: string; album: string; artwork?: string;
 }) {
   if (!("mediaSession" in navigator)) return;
+
   navigator.mediaSession.metadata = new MediaMetadata({
     title: track.title,
     artist: track.artist,
     album: track.album,
     artwork: track.artwork
-      ? [{ src: track.artwork, sizes: "512x512", type: "image/jpeg" }]
+      ? [
+          { src: track.artwork, sizes: "96x96",   type: "image/jpeg" },
+          { src: track.artwork, sizes: "256x256",  type: "image/jpeg" },
+          { src: track.artwork, sizes: "512x512",  type: "image/jpeg" },
+        ]
       : [],
   });
-  navigator.mediaSession.setActionHandler("play", () =>
-    usePlayerStore.getState().setIsPlaying(true)
-  );
-  navigator.mediaSession.setActionHandler("pause", () =>
-    usePlayerStore.getState().setIsPlaying(false)
-  );
-  navigator.mediaSession.setActionHandler("nexttrack", () =>
-    usePlayerStore.getState().playNext()
-  );
-  navigator.mediaSession.setActionHandler("previoustrack", () =>
-    usePlayerStore.getState().playPrev()
-  );
+
+  navigator.mediaSession.setActionHandler("play", () => {
+    usePlayerStore.getState().setIsPlaying(true);
+  });
+  navigator.mediaSession.setActionHandler("pause", () => {
+    usePlayerStore.getState().setIsPlaying(false);
+  });
+  navigator.mediaSession.setActionHandler("nexttrack", () => {
+    usePlayerStore.getState().playNext();
+  });
+  navigator.mediaSession.setActionHandler("previoustrack", () => {
+    usePlayerStore.getState().playPrev();
+  });
+  navigator.mediaSession.setActionHandler("seekto", (details) => {
+    if (details.seekTime != null && audio && audio.duration) {
+      isSeeking = true;
+      audio.currentTime = details.seekTime;
+      usePlayerStore.getState().setProgress(details.seekTime / audio.duration);
+      setTimeout(() => { isSeeking = false; }, 200);
+    }
+  });
+  navigator.mediaSession.setActionHandler("seekbackward", (details) => {
+    if (audio) audio.currentTime = Math.max(0, audio.currentTime - (details.seekOffset ?? 10));
+  });
+  navigator.mediaSession.setActionHandler("seekforward", (details) => {
+    if (audio) audio.currentTime = Math.min(audio.duration, audio.currentTime + (details.seekOffset ?? 10));
+  });
 }
